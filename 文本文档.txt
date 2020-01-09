@@ -1,1 +1,1273 @@
 这儿啥都没有，我说真的 
+package com.epoch.bdp.businessobject.service.base.imp;
+
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
+import com.epoch.bdp.businessobject.dao.base.*;
+import com.epoch.bdp.businessobject.dao.bodefine.IBODefineDAO;
+import com.epoch.bdp.businessobject.dao.botypedefine.IBOTypeDefineDAO;
+import com.epoch.bdp.businessobject.model.constant.BOConstants;
+import com.epoch.bdp.businessobject.model.entity.base.*;
+import com.epoch.bdp.businessobject.model.entity.bodefine.BODefineDO;
+import com.epoch.bdp.businessobject.model.entity.botypedefine.BOTypeDefineDO;
+import com.epoch.bdp.businessobject.model.enums.BOI18nEnum;
+import com.epoch.bdp.businessobject.model.enums.base.BOMainAreaBaseFieldEnum;
+import com.epoch.bdp.businessobject.model.enums.base.BOTypeEnum;
+import com.epoch.bdp.businessobject.model.enums.bodefine.BOColumnDataTypeEnum;
+import com.epoch.bdp.businessobject.model.enums.common.DataAttributeEnum;
+import com.epoch.bdp.businessobject.model.event.BOAreaFieldDataEvent;
+import com.epoch.bdp.businessobject.model.exception.BORuntimeException;
+import com.epoch.bdp.businessobject.model.vo.auth.BOAuthBaseVO;
+import com.epoch.bdp.businessobject.model.vo.base.BOAreaFieldVO;
+import com.epoch.bdp.businessobject.model.vo.base.BOAreaVO;
+import com.epoch.bdp.businessobject.model.vo.base.IncreaseNumConfigVO;
+import com.epoch.bdp.businessobject.service.auth.IBOViewAuthService;
+import com.epoch.bdp.businessobject.service.base.IBOAreaFieldService;
+import com.epoch.bdp.businessobject.service.base.IBOAreaService;
+import com.epoch.bdp.businessobject.service.bodefine.IBODefineService;
+import com.epoch.bdp.businessobject.service.botype.IBOTypeDefineService;
+import com.epoch.bdp.businessobject.service.common.IBOUtilService;
+import com.epoch.bdp.businessobject.util.BOAssertUtils;
+import com.epoch.bdp.businessobject.util.BOColumnCodeExtractor;
+import com.epoch.bdp.businessobject.util.BODependentFieldUtils;
+import com.epoch.bdp.businessobject.util.BODependentFieldUtils.DependentColumnAndField;
+import com.epoch.bdp.masterdata.model.enums.DimensionTypeEnum;
+import com.epoch.bdp.rule.model.entity.RulePointInfoDO;
+import com.epoch.bdp.rule.model.entity.RulePointRelationDO;
+import com.epoch.bdp.rule.model.enums.FunctionTypeEnum;
+import com.epoch.bdp.rule.model.enums.RulePointGroupTypeEnum;
+import com.epoch.bdp.rule.service.compile.IRuleCompileService;
+import com.epoch.bdp.rule.service.graph.IGraphModelService;
+import com.epoch.bdp.util.dao.ISysColumnDAO;
+import com.epoch.bdp.util.model.entity.SysColumnDO;
+import com.epoch.bdp.util.model.enums.ColumnTypeEnum;
+import com.epoch.bdp.util.model.vo.ColumnInfoVO;
+import com.epoch.bdp.util.model.vo.TableInfoVO;
+import com.epoch.bdp.util.service.tablemanager.ITableService;
+import com.epoch.infrastructure.exception.util.ValidatorUtils;
+import com.epoch.infrastructure.i18n.service.II18nDynamicService;
+import com.epoch.infrastructure.log.model.enums.OperateTypeEnum;
+import com.epoch.infrastructure.log.service.ILogFileService;
+import com.epoch.infrastructure.util.model.ResultValue;
+import com.epoch.infrastructure.util.model.TreeNodeVO;
+import com.epoch.infrastructure.util.model.annotation.ThreadLocalCache;
+import com.epoch.infrastructure.util.service.ApplicationContextAwareUtils;
+import com.epoch.infrastructure.util.service.CurrentUserUtils;
+import com.epoch.infrastructure.util.service.IDGenerator;
+import com.epoch.infrastructure.util.service.JsonUtils;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.Assert;
+
+import java.sql.Timestamp;
+import java.text.MessageFormat;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.stream.Collectors;
+
+/**
+ * 业务对象字段实现类
+ *
+ * @author 刘远
+ * @date 2019年2月12日 下午3:01:06
+ */
+@Service
+public class BOAreaFieldService implements IBOAreaFieldService {
+    @Autowired
+    private IBOUtilService boUtilService;
+    @Autowired
+    private IBOAreaService boAreaService;
+    @Autowired
+    private ITableService iTableService;
+    @Autowired
+    private IGraphModelService graphModelService;
+    @Autowired
+    private IBODefineService boDefineService;
+
+    @Autowired
+    private IBODataModelDAO boDataModelDAO;
+    @Autowired
+    private IBOAreaFieldDAO boAreaFieldDAO;
+    @Autowired
+    private IBOTypeAreaFieldDAO boTypeAreaFieldDAO;
+    @Autowired
+    private IBOTypeDefineDAO boTypeDefineDAO;
+    @Autowired
+    private II18nDynamicService i18nDynamicService;
+    @Autowired
+    private IBODefineDAO boDefineDAO;
+    @Autowired
+    private IBOAreaDAO boAreaDao;
+    @Autowired
+    private IBOAuthFieldDao boAuthFieldDao;
+
+    @Autowired
+    private ISysColumnDAO sysColumnDAO;
+    @Autowired
+    private IRuleCompileService ruleCompileService;
+    @Autowired
+    private IBOTypeDefineService boTypeDefineService;
+    @Autowired
+    private IBOViewAuthService boViewAuthService;
+
+    @Autowired
+    private ILogFileService logFileService;
+
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public BOAreaFieldVO insertAreaField(BOAreaFieldVO fieldVO) {
+        ValidatorUtils.notNull(fieldVO, BOI18nEnum.BO_DATA_FOMART_ERROR);
+
+        fieldVO.setColumnCode(fieldVO.getColumnCode().toUpperCase());
+        //校验自定义编码是否满足格式
+        //1.编码是否符合字段名命名规范
+        //如果不符合要求，则必须提示让用户输入符合要求的编码
+        Matcher matcher;
+        switch (fieldVO.getDataType()) {
+            case MONEY:
+                matcher = BOColumnCodeExtractor.PATTERN_SELF_MONEY_FIELD.matcher(fieldVO.getColumnCode());
+                if (!matcher.matches()) {
+                    throw new BORuntimeException(BOI18nEnum.SLEF_CODE_ERROR.getTitle(), BOI18nEnum.SLEF_CODE_ERROR, 11);
+                }
+                break;
+            case RELATION_BO:
+            case OPERATION_BO:
+                matcher = BOColumnCodeExtractor.PATTERN_SELF_RELATION_BO_OR_OPERATION_BO_FIELD.matcher(fieldVO.getColumnCode());
+                if (!matcher.matches()) {
+                    throw new BORuntimeException(BOI18nEnum.SLEF_CODE_ERROR.getTitle(), BOI18nEnum.SLEF_CODE_ERROR, 19);
+                }
+                break;
+            default:
+                matcher = BOColumnCodeExtractor.PATTERN_SELF_FIELD.matcher(fieldVO.getColumnCode());
+                if (!matcher.matches()) {
+                    throw new BORuntimeException(BOI18nEnum.SLEF_CODE_ERROR.getTitle(), BOI18nEnum.SLEF_CODE_ERROR, 30);
+                }
+                break;
+        }
+
+        //得到tableCode
+        BOAreaDO boAreaDO=boAreaService.selectAreaById(fieldVO.getBoAreaId());
+        if(null!=boAreaDO){
+
+            List<String> tableNameList=new ArrayList<>();
+            BODefineDO boDefineDO =boDefineDAO.selectByPrimaryKey(boAreaDO.getBoDefineId());
+            if(null!=boDefineDO){
+                //如果是主区域
+                if(boAreaDO.getMain()){
+                    //判断是否实例生成维度
+                    //肯定要把主表加入到tableNameList
+                    tableNameList.add(boDefineDO.getMainTable());
+                    if(boDefineDO.getInstanceIsDim()){
+                        //如果是实例生成维度，则要把主表和扩展表都放入tableNameList
+                        tableNameList.add(boDefineDO.getMainCustomTableName());
+                    }
+                }
+                //如果子区域
+                else{
+                    tableNameList.add(boAreaDO.getTableName());
+                }
+                //2.编码是否已存在
+                for(String tableName:tableNameList){
+                    boolean isExistColumn = iTableService.existColumn(tableName,fieldVO.getColumnCode());
+                    if(isExistColumn){
+                        throw  new BORuntimeException(BOI18nEnum.BO_FIELD_CODE_EXIST.getTitle(),BOI18nEnum.BO_FIELD_CODE_EXIST, fieldVO.getColumnCode());
+                    }
+                }
+
+            }
+        }
+
+        fieldVO.setColumnName(fieldVO.getColumnCode());
+        // 用作字段回写
+        BOAreaFieldVO record = new BOAreaFieldVO();
+        BeanUtils.copyProperties(fieldVO, record);
+
+        //先在对应的区域表添加字段
+        String boAreaId = fieldVO.getBoAreaId();
+        BOAreaDO boArea = boAreaService.selectAreaById(boAreaId);
+
+        if (boArea == null) {
+            throw new BORuntimeException(BOI18nEnum.BO_DATA_AREA_IS_NULL);
+        }
+        //check该对象该区域下是否有同名的字段
+        int numOfRepeat = boTypeAreaFieldDAO.checkNameRepeat(fieldVO.getBoObjectId(), fieldVO.getBoAreaId(), fieldVO.getFieldTitle());
+        if (numOfRepeat > 0) {
+            throw new BORuntimeException(BOI18nEnum.BO_DATA_AREA_FIELD_NAME_EXIST);
+        }
+
+        //处理自增编号字段的逻辑
+        disposeIncreseNumField(fieldVO);
+
+        String tableId = boArea.getTableId();
+        String tableName = boArea.getTableName();
+        if (boArea.getMain() && boArea.getInstanceIsDim()) {
+            BODefineDO boDefine = boDefineService.getBODefine(boArea.getBoDefineId());
+            tableId = boDefine.getMainCustomTableId();
+            tableName = boDefine.getMainCustomTableName();
+        }
+
+        fieldVO.setDataAttribute(DataAttributeEnum.DEFAULT);
+        fieldVO.setTableId(tableId);
+
+        //这个作为id和多语言的key，先生成
+        String boAreaFieldId = IDGenerator.newID();
+        fieldVO.setBoAreaFieldId(boAreaFieldId);
+        String str = boUtilService.saveCurrentLangugeService(boAreaFieldId, fieldVO.getFieldTitle(), fieldVO.getFieldTitleMap());
+        if (StringUtils.isNotBlank(str)) {
+            fieldVO.setFieldTitle(str);
+        }
+
+        String tipsLanguageKey = IDGenerator.newID();
+        fieldVO.setTipsLanguageKey(tipsLanguageKey);
+        str = boUtilService.saveCurrentLangugeService(tipsLanguageKey, fieldVO.getTips(), fieldVO.getTipsMap());
+        if (StringUtils.isNotBlank(str)) {
+            fieldVO.setTips(str);
+        }
+
+        String title = fieldVO.getFieldTitle();
+
+        String fieldCode = fieldVO.getColumnName();
+
+        ColumnInfoVO column = new ColumnInfoVO();
+        column.setColumnName(title);
+        column.setColumnCode(fieldCode);
+        column.setDataType(fieldVO.getDataType().getDataType());
+        column.setDescription(fieldVO.getDescription());
+        column.setDataSourceId(fieldVO.getDataSourceId());
+        
+        //20190905:附件型字段长度2000字符（因为可以上传多个附件）
+        if(fieldVO.getDataType() == BOColumnDataTypeEnum.ATTACHMENT) {
+        	column.setColumnType(ColumnTypeEnum.TEXT);
+        	column.setLength(2000);
+        }
+
+        ResultValue<SysColumnDO> columnResult = iTableService.addColumn(tableName, column);
+        if (!columnResult.isSuccess()) {
+            throw new BORuntimeException(BOI18nEnum.BO_ADD_FIELD_ERROR.translation());
+        }
+
+        SysColumnDO data = columnResult.getData();
+        fieldVO.setColumnId(data.getColumnId());
+
+        //插入数据
+        fieldVO.setVersion(BOConstants.INIT_VERSION);
+        fieldVO.setCreateDate(LocalDateTime.now());
+        fieldVO.setUpdateDate(LocalDateTime.now());
+        fieldVO.setBizField(true);
+        fieldVO.setAttributeName(fieldCode);
+        //fieldVO.setColumnName(fieldCode);
+        fieldVO.setSystem(false);
+//
+//		int count = boUtilService.queryTableAccountByField("T_BO_AREA_FIELD", "BO_AREA_ID", boAreaId);
+//		fieldVO.setPosition(count++);
+
+        String boObjectId = fieldVO.getBoObjectId();
+
+        this.insertFieldToDB(fieldVO, boObjectId, tableName);
+
+        //金额和关联对象字段需要构造附加字段
+        addDependentFields(fieldVO, tableName);
+
+        //如果是人员字段且在主区域，插入数据权限 T_BO_AUTH_FIELD
+        if(fieldVO.getDataType() == BOColumnDataTypeEnum.PERSON && Boolean.TRUE.equals(boArea.getMain())){
+            insertBoAuthField(fieldVO, boArea.getBoDefineId());
+        }
+
+        //发布事件
+        Map<String, Object> extendParam = null;
+        if (BOTypeEnum.OBJECT_TYPE.equals(fieldVO.getBoType())) {
+            boObjectId = fieldVO.getBoObjectId();
+//            extendParam = new HashMap<>();
+//            extendParam.put("boTypeDefineId", fieldVO.getBoObjectId());
+//            extendParam.put("boType", BOTypeEnum.OBJECT_TYPE);
+            extendParam = BOAreaFieldDataEvent.makeExtendParamsForBoType(fieldVO.getBoObjectId());
+        }
+        ApplicationContextAwareUtils.publishEvent(new BOAreaFieldDataEvent(fieldVO, OperateTypeEnum.INSERT, extendParam));
+
+        // 自增编号规则回显
+        if (fieldVO.getDataType() == BOColumnDataTypeEnum.INCREASE_NUM) {
+            fieldVO.setExtendInfo(record.getExtendInfo());
+        }
+        return fieldVO;
+    }
+
+    /**
+     * 处理自增编号字段，校验必填属性和唯一性
+     *
+     * @param fieldVO
+     */
+    private void disposeIncreseNumField(BOAreaFieldVO fieldVO) {
+        // 自增编号类型的字段确保每个业务对象只有一个且在主表区
+        if (fieldVO.getDataType() == BOColumnDataTypeEnum.INCREASE_NUM) {
+            //1.判断是否在主区域
+            BOAreaDO boAreaDO = boAreaService.selectAreaById(fieldVO.getBoAreaId());
+            if (!boAreaDO.getMain()) {
+                throw new BORuntimeException(BOI18nEnum.INCR_NUM_ADD_IN_MAIN_AREA);
+            }
+            // 如果字段为自增编号类型时，numRule需要经过规则处理再存入数据库中
+            if (StringUtils.isNotBlank(fieldVO.getExtendInfo())) {
+                IncreaseNumConfigVO increaseNumConfigVO = getNewExtendInfo(fieldVO.getExtendInfo(), fieldVO.getBoObjectId());
+                fieldVO.setExtendInfo(JsonUtils.toJSON(increaseNumConfigVO));
+            } else {
+                throw new BORuntimeException(BOI18nEnum.INCR_NUM_EXTEND_INFO_IS_NULL);
+            }
+            // 自增编号字段，必须是只读
+            fieldVO.setReadOnly(true);
+//            fieldVO.setRequired(true);
+        }
+    }
+
+    /**
+     * 为指定字段添加附属字段
+     *
+     * @param baseFieldVO
+     * @param tableName
+     */
+    private void addDependentFields(BOAreaFieldVO baseFieldVO, String tableName) {
+        List<DependentColumnAndField> extColAndFields = null;
+        if (baseFieldVO.getDataType().equals(BOColumnDataTypeEnum.RELATION_BO)) {
+            extColAndFields = BODependentFieldUtils.getDependentColumnsForRelationBO(baseFieldVO);
+        } else if (baseFieldVO.getDataType().equals(BOColumnDataTypeEnum.MONEY)) {
+            extColAndFields = BODependentFieldUtils.getDependentColumnsForMoney(baseFieldVO);
+        } else {
+            return;
+        }
+        if (extColAndFields != null) {
+            for (DependentColumnAndField extColAndField : extColAndFields) {
+                ResultValue<SysColumnDO> colResult = iTableService.addColumn(tableName, extColAndField.getDependentColumn());
+                if (colResult.isSuccess()) {
+                    //复制columnId等SysColumnDO持久化产生的属性
+                    extColAndField.copyAttributesFromPersistedColumn(colResult.getData());
+                    BOAreaFieldVO extendFieldVO = extColAndField.getDependentField();
+                    this.insertFieldToDB(extendFieldVO, baseFieldVO.getBoObjectId(), tableName);
+                } else {
+                    logFileService.info(MessageFormat.format(BOI18nEnum.BO_ADD_FIELD_ERROR.translation() + "，原因：{0}", colResult.getMessage()));
+                    throw new BORuntimeException(BOI18nEnum.BO_ADD_FIELD_ERROR.translation() + "，原因：{0}", colResult.getMessage());
+                }
+            }
+        }
+    }
+
+    @Override
+    public void insertFieldToDB(BOAreaFieldVO fieldVO, String boObjectId, String tableName) {
+        BODataModelDO boDataModel = boDataModelDAO.selectByAreaId(boObjectId, fieldVO.getBoAreaId());
+        if (boDataModel == null) {
+            throw new BORuntimeException(BOI18nEnum.BO_AREA_DATA_MODEL_IS_NULL);
+        }
+        this.insertFieldToDB(fieldVO, boObjectId, boDataModel.getBoDataModelId(), tableName);
+    }
+
+
+    /**
+     * 将页面传过来的自增编号封装为IncreaseNumConfigVO对象
+     *
+     * @param sourceExtendInfo
+     * @param boObjectId
+     * @return
+     */
+    private IncreaseNumConfigVO getNewExtendInfo(String sourceExtendInfo, String boObjectId) {
+        IncreaseNumConfigVO increaseNumConfigVO = JsonUtils.fromJSON(sourceExtendInfo, IncreaseNumConfigVO.class);
+        // 校验自增编号设置属性的必填性
+        verifyFieldRequired(increaseNumConfigVO);
+        String executeRule = ruleCompileService.convertRule(JsonUtils.toJSON(increaseNumConfigVO.getNumRule()),
+                boDefineService.getRuleAreaLevelRelationMapByBoObjectId(boObjectId));
+        increaseNumConfigVO.setExecuteRule(executeRule);
+        return increaseNumConfigVO;
+    }
+
+    /**
+     * 校验自增编号设置属性的必填性
+     *
+     * @param increaseNumConfigVO
+     */
+    private void verifyFieldRequired(IncreaseNumConfigVO increaseNumConfigVO) {
+        JSONObject numRule = increaseNumConfigVO.getNumRule();
+        BOAssertUtils.assertTrue(numRule != null && !numRule.isEmpty(), BOI18nEnum.INCR_NUM_RULE_NOT_FOUND);
+        BOAssertUtils.assertTrue(increaseNumConfigVO.getNumLength() != null, BOI18nEnum.INCR_NUM_LENGTH_NOT_FOUND);
+        BOAssertUtils.assertTrue(increaseNumConfigVO.getInitialValue() != null, BOI18nEnum.INCR_NUM_INIT_VALUE_NOT_FOUND);
+        BOAssertUtils.assertTrue(StringUtils.isNotBlank(increaseNumConfigVO.getResetPeriod()), BOI18nEnum.INCR_NUM_RESET_PERIOD_NOT_FOUND);
+        BOAssertUtils.assertTrue(increaseNumConfigVO.getOpportunity() != null, BOI18nEnum.INCR_NUM_OPPORTUNITY_NOT_FOUND);
+    }
+
+    @Override
+    public void insertFieldToDB(BOAreaFieldVO fieldVO, String boObjectId, String boDataModelId, String tableName) {
+        boolean initRequired = fieldVO.getRequired() == null ? false : fieldVO.getRequired();
+        boolean initReadOnly = fieldVO.getReadOnly() == null ? false : fieldVO.getReadOnly();
+        boolean initHidden = fieldVO.getHidden() == null ? false : fieldVO.getHidden();
+        fieldVO.setDefaultLoad(fieldVO.getDefaultLoad() == null ? false : fieldVO.getDefaultLoad());
+        fieldVO.setNeed(fieldVO.getNeed() == null ? false : fieldVO.getNeed());
+        fieldVO.setDefaultLoad(fieldVO.getDefaultLoad() == null ? false : fieldVO.getDefaultLoad());
+        fieldVO.setInherit(fieldVO.getInherit() == null ? false : fieldVO.getInherit());
+        
+        //20190830 新增字段后返回值中缺失boDataModelId会导致直接拖到格式设计器上的字段，定义的规则和公式有没有targetAreaId
+        fieldVO.setBoDataModelId(boDataModelId);
+        
+        /*fieldVO.setRequired(fieldVO.getRequired() == null ? false : fieldVO.getRequired());
+        fieldVO.setReadOnly(fieldVO.getReadOnly() == null ? false : fieldVO.getReadOnly());
+        fieldVO.setHidden(fieldVO.getHidden() == null ? false : fieldVO.getHidden());*/
+        //【ID1011029】5-后端-创建对象类型继承字段时或对象类型中引用字段时，不继承“隐藏”“必填”和“只读”3个属性
+        //T_BO_AREA_FIELD表里只读，隐藏和必填三个字段是false
+        fieldVO.setRequired(false);
+        fieldVO.setReadOnly(false);
+        fieldVO.setHidden(false);
+        //如果是链接台帐字段 必须是只读的。yangh
+        if (fieldVO.getDataType().equals(BOColumnDataTypeEnum.MACHINE_LINK)) {
+            fieldVO.setReadOnly(true);
+        }
+        //int count = boUtilService.queryTableAccountByField("T_BO_AREA_FIELD", "BO_AREA_ID", fieldVO.getBoAreaId());
+        int count=boAreaFieldDAO.Position_self_increment(fieldVO.getBoAreaId());
+        fieldVO.setPosition(count+1);
+
+
+        //插入到T_BO_AREA_FIELD表
+        boAreaFieldDAO.insert(fieldVO);
+
+        //插入关系表
+        BOTypeAreaFieldDO record = new BOTypeAreaFieldDO();
+        BeanUtils.copyProperties(fieldVO, record);
+
+        String boTypeAreaFieldId = IDGenerator.newID();
+        boUtilService.saveCurrentLangugeService(boTypeAreaFieldId, fieldVO.getFieldTitle(), fieldVO.getFieldTitleMap());
+
+        fieldVO.setBoTypeAreaFieldId(boTypeAreaFieldId);
+        record.setBoTypeAreaFieldId(boTypeAreaFieldId);
+        record.setBoAreaFieldId(fieldVO.getBoAreaFieldId());
+        record.setBoObjectId(boObjectId);
+        record.setCreateDate(LocalDateTime.now());
+        record.setUpdateDate(LocalDateTime.now());
+        record.setVersion(BOConstants.INIT_VERSION);
+        record.setInherit(fieldVO.getInherit());
+        //如果是从类型定义里新增字段,只读，隐藏和必填三个字段是false
+        if (fieldVO.getBoType().equals(BOTypeEnum.OBJECT_TYPE)) {
+            record.setHidden(false);
+            record.setRequired(false);
+            record.setReadOnly(false);
+        }
+        //如果是从结构定义里新增字段,只读，隐藏和必填三个字段是页面输入的值
+        else {
+            record.setRequired(initRequired);
+            record.setReadOnly(initReadOnly);
+            record.setHidden(initHidden);
+        }
+
+        //int count2 = boUtilService.queryTableAccountByField("T_BO_TYPE_AREA_FIELD", "BO_OBJECT_ID", boObjectId);
+        int count2=boTypeAreaFieldDAO.Position_self_increment(boObjectId);
+        record.setPosition(count2+1);
+        //如果字段类型不为自增编号时，扩展信息不需要添加到T_BO_TYPE_AREA_FIELD表中
+        if (fieldVO.getDataType() != BOColumnDataTypeEnum.INCREASE_NUM) {
+            record.setExtendInfo(null);
+        } else {
+            // 自增编号字段，必须是必填、只读
+            fieldVO.setReadOnly(true);
+            fieldVO.setRequired(true);
+        }
+
+        // 行号字段，设置为只读
+        if (StringUtils.equals(fieldVO.getAttributeName(), BOMainAreaBaseFieldEnum.ROW_NUM.getCode())){
+            record.setReadOnly(true);
+        }
+
+        //插入关系表T_BO_TYPE_AREA_FIELD
+        boTypeAreaFieldDAO.insert(record);
+        if (fieldVO.getBizField() && fieldVO.getDataType() != BOColumnDataTypeEnum.MACHINE_LINK) {
+            //业务字段同步图库
+            BOAreaFieldDO boAreaFieldDO = boAreaFieldDAO.selectByPrimaryKey(record.getBoAreaFieldId());
+            //同步图库
+            bizFieldSyncGraphModel(boAreaFieldDO, boDataModelId, tableName, record);
+        }
+
+        boUtilService.logInsertService(fieldVO, "插入业务对象字段");
+        fieldVO.setRequired(initRequired);
+        fieldVO.setReadOnly(initReadOnly);
+        fieldVO.setHidden(initHidden);
+    }
+
+    /**
+     * 人员字段，需要保存数据权限信息
+     * @param fieldVO
+     * @param boDefineId
+     */
+    @Override
+    public void insertBoAuthField(BOAreaFieldVO fieldVO, String boDefineId) {
+        BOAuthFieldDO boAuth = fieldVO.getBoAuth();
+        if(boAuth == null){
+            boAuth = new BOAuthFieldDO();
+        }
+        boAuth.setObjectId(IDGenerator.newID());
+        boAuth.setBoDefineId(boDefineId);
+        boAuth.setBoAreaFieldId(fieldVO.getBoAreaFieldId());
+		if (fieldVO.getColumnCode() != null) {
+			boAuth.setColumnCode(fieldVO.getColumnCode());
+		} else {
+			boAuth.setColumnId(fieldVO.getAttributeName());
+		}
+        boAuth.setColumnId(fieldVO.getColumnId());
+        boAuth.setCreateBy(CurrentUserUtils.getCurrentLoginName());
+        boAuth.setUpdateBy(CurrentUserUtils.getCurrentLoginName());
+        boAuth.setUpdateLogin(CurrentUserUtils.getCurrentLoginName());
+        Timestamp timestamp = new Timestamp(System.currentTimeMillis());
+        boAuth.setCreateDate(timestamp);
+        boAuth.setUpdateDate(timestamp);
+        boAuth.setVersionNumber(1);
+		//如果新增字段为人员类的创建人字段，默认设置查看，修改，删除权限为true
+		if (StringUtils.equals(boAuth.getColumnCode(), BOMainAreaBaseFieldEnum.CREATOR_ID.getCode())) {
+			boAuth.setViewAuth(true);
+			boAuth.setDeleteAuth(true);
+			boAuth.setEditAuth(true);
+		}
+        boAuthFieldDao.insert(boAuth);
+    }
+
+    /**
+     * 业务字段同步图库
+     *
+     * @param boAreaFieldDO
+     * @param boDataModelId
+     * @param tableName
+     * @param boTypeAreaFieldDO
+     */
+    public void bizFieldSyncGraphModel(BOAreaFieldDO boAreaFieldDO, String boDataModelId, String tableName, BOTypeAreaFieldDO boTypeAreaFieldDO) {
+        RulePointInfoDO rulePointInfoDO = new RulePointInfoDO();
+        Optional<SysColumnDO> column = iTableService.getColumnById(boAreaFieldDO.getColumnId());
+        rulePointInfoDO.setGraphPointInfoId(boTypeAreaFieldDO.getBoTypeAreaFieldId());
+        String columnCode = null;
+        if (column.isPresent()) {
+            columnCode = column.get().getColumnCode();
+        }
+        rulePointInfoDO.setPointKey(columnCode);
+        rulePointInfoDO.setJsCode(columnCode);
+        rulePointInfoDO.setPointName(boAreaFieldDO.getFieldTitle());
+        rulePointInfoDO.setGroupType(RulePointGroupTypeEnum.BUSINESS_OBJECT_ATTRIBUTE);
+        rulePointInfoDO.setFunctionType(FunctionTypeEnum.GETCOLUMNDATAVALUE);
+        rulePointInfoDO.setValueType(boAreaFieldDO.getDataType().getRuleType());
+        // 20190828 新增规则节点属性  liyi
+        rulePointInfoDO.setOriginalDataType(boAreaFieldDO.getDataType().getDataType());
+        rulePointInfoDO.setAreaId(boDataModelId);
+        rulePointInfoDO.setRelyInfo(boAreaFieldDO.getDataSourceId());
+        if (boAreaFieldDO.getDataType() == BOColumnDataTypeEnum.PERSON) {
+            rulePointInfoDO.setRelyInfo(DimensionTypeEnum.SYS_USER.getId());
+        } else if (boAreaFieldDO.getDataType() == BOColumnDataTypeEnum.PAYMENT_ACCOUNT) {
+            rulePointInfoDO.setRelyInfo("RECEIVE_OR_PAY_OBJECT");
+        } else if (boAreaFieldDO.getDataType() == BOColumnDataTypeEnum.RELATION_BO) {
+            rulePointInfoDO.setAssociationTypeId(boAreaFieldDO.getBoDefineTypeId().get(0));
+            rulePointInfoDO.setAssociationType(RulePointGroupTypeEnum.BUSINESS_OBJECT_TYPE);
+        }
+        rulePointInfoDO.setSqlCode(tableName + "." + columnCode);
+        rulePointInfoDO.setOriginalPointId(boAreaFieldDO.getBoAreaFieldId());
+        rulePointInfoDO.setOtherAreaId(boAreaFieldDO.getBoAreaId());
+        graphModelService.insertGraphPoint(rulePointInfoDO);
+
+        //关系表
+        List<RulePointRelationDO> rulePointRelationList = new ArrayList<>();
+        RulePointRelationDO rulePointRelationDO = new RulePointRelationDO();
+        String boObjectId = boTypeAreaFieldDO.getBoObjectId();
+        rulePointRelationDO.setStartPointid(boObjectId);
+        rulePointRelationDO.setEndPointid(boTypeAreaFieldDO.getBoTypeAreaFieldId());
+        rulePointRelationList.add(rulePointRelationDO);
+        // 维度类型属性写入图库botype获取dimTypeId
+        BODefineDO boDefineDO = boDefineDAO.getBOBaseByBoDefineIdOrBoTypeDefineId(boObjectId);
+        // 实例维度类型属性写入图库
+        RulePointRelationDO instanceDimTypeRelationDo = new RulePointRelationDO();
+        if (boDefineDO != null && boDefineDO.getInstanceIsDim()) {
+            String newID = IDGenerator.newID();
+            rulePointInfoDO.setGraphPointInfoId(newID);
+            rulePointInfoDO.setGroupType(RulePointGroupTypeEnum.DIM_ATTRIBUTE);
+            rulePointInfoDO.setFunctionType(FunctionTypeEnum.GETDIMCOLUNMNDATA);
+            graphModelService.insertGraphPoint(rulePointInfoDO);
+            instanceDimTypeRelationDo.setStartPointid(boDefineDO.getInstanceDimTypeId());
+            instanceDimTypeRelationDo.setEndPointid(newID);
+            rulePointRelationList.add(instanceDimTypeRelationDo);
+        }
+        graphModelService.insertPointRelation(rulePointRelationList);
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectFieldByAreaId(String boObjectId, String boAreaId) {
+        List<BOAreaFieldVO> boAreaFieldVOS = boAreaFieldDAO.selectFieldByAreaId(boObjectId, boAreaId);
+        // 如果是自增编号类型，把typeExtendInfo赋值给extendInfo
+        for (BOAreaFieldVO boAreaFieldVO : boAreaFieldVOS) {
+            if (boAreaFieldVO.getDataType() == BOColumnDataTypeEnum.INCREASE_NUM) {
+                boAreaFieldVO.setExtendInfo(boAreaFieldVO.getTypeExtendInfo());
+            }
+            if(boAreaFieldVO.getBoAreaFieldId()!=null){
+                BOAuthFieldDO boAuthFieldDO=boAuthFieldDao.selectByBoAreaFieldId(boAreaFieldVO.getBoAreaFieldId());
+                boAreaFieldVO.setBoAuth(boAuthFieldDO);
+            }
+        }
+        //根据boTypeAreaFieldId获取I18N数据
+        getI18nforFields(boAreaFieldVOS, (fieldVO) -> fieldVO.getBoTypeAreaFieldId());
+        return boAreaFieldVOS;
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectAllFieldByAreaId(String boAreaId) {
+        List<BOAreaFieldVO> fields = boAreaFieldDAO.selectAllFieldByAreaId(boAreaId);
+        if (fields == null)
+            return Collections.emptyList();
+        //根据boAreaFieldId获取国际化标题等
+        getI18nforFields(fields, (fieldVO) -> fieldVO.getBoAreaFieldId());
+        return fields;
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectFieldByAreaIdAll(String boObjectId, String boAreaId) {
+        return boAreaFieldDAO.selectFieldByAreaIdAll(boObjectId, boAreaId);
+    }
+
+    public List<BOAreaFieldVO> selectAllFieldByAreaId(String boAreaId, String boDefineId,String parentAreaId) {
+        List<BOAreaFieldVO> fields = boAreaFieldDAO.selectAllTypeFieldByAreaId(boAreaId);
+        if (CollectionUtils.isEmpty(fields)) {
+            return Collections.emptyList();
+        }
+        List<BOAreaFieldVO> boAreaFieldVOS = filterFiledByBoId(fields, boDefineId,parentAreaId);
+        translateFieldTitle(boAreaFieldVOS);
+        return boAreaFieldVOS;
+    }
+
+    /**
+     * 过滤多个重复字段，一个boAreaFieldId只保留一个字段
+     * @param fields 该区域对象和所有类型的字段
+     * @param boDefineId
+     * @return
+     */
+    private List<BOAreaFieldVO> filterFiledByBoId(List<BOAreaFieldVO> fields, String boDefineId,String parentAreaId){
+        List<BOAreaFieldVO> fieldVOS = new ArrayList<>();
+        // 用Map来过滤相同boAreaFieldId的字段
+        Map<String, BOAreaFieldVO> areaFieldVOMap = new LinkedHashMap<>();
+        fields.forEach(fieldVO -> {
+            // 如果为结构定义的字段，则覆盖
+            if (StringUtils.equals(fieldVO.getBoObjectId(), boDefineId)){
+                areaFieldVOMap.put(fieldVO.getBoAreaFieldId(), fieldVO);
+            }
+            // map中不存在，添加
+            if (!areaFieldVOMap.containsKey(fieldVO.getBoAreaFieldId())) {
+                areaFieldVOMap.put(fieldVO.getBoAreaFieldId(), fieldVO);
+            }
+            fieldVO.setParentAreaId(parentAreaId);
+        });
+        fieldVOS.addAll(areaFieldVOMap.values());
+        return fieldVOS;
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectFieldByBoId(String boObjectId) {
+        return boAreaFieldDAO.selectFieldByBoId(boObjectId);
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectFieldByTableId(String tableId, String boObjectId) {
+        return boAreaFieldDAO.selectFieldByTableId(tableId, boObjectId);
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectFieldByTableIdRegradlessBoType(String boAreaId) {
+        return boAreaFieldDAO.selectFieldByTableIdRegradlessBoType(boAreaId);
+    }
+
+    public ResultValue<Object> queryUpdateFieldNameIsExist(String boObjectId, String areaId, String fieldTitle, String columnId) {
+        ResultValue<Object> resultValue = new ResultValue(false);
+        if (StringUtils.isNotBlank(fieldTitle)) {
+            //int count = this.iBillDefineAreaFieldDao.queryFieldNameCount(billDefineId, "", fieldTitle, columnId, false, areaId, "");
+            int count =  boTypeAreaFieldDAO.checkNameRepeatForUpdate(boObjectId, areaId, fieldTitle, columnId);
+            resultValue.setSuccess(true);
+            resultValue.setData(count);
+        }
+        return resultValue;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public BOAreaFieldVO updateAreaFieldById(BOAreaFieldVO fieldUpdate) {
+        Assert.notNull(fieldUpdate, "字段不能为空");
+        //check该对象该区域下是否有同名的字段
+        ResultValue<Object> resultValue_ = this.queryUpdateFieldNameIsExist(fieldUpdate.getBoObjectId(), fieldUpdate.getBoAreaId(), fieldUpdate.getFieldTitle(), fieldUpdate.getColumnId());
+        int count1 = Integer.parseInt(resultValue_.getData() + "");
+        if (count1 > 0) {
+            throw new BORuntimeException(BOI18nEnum.BO_NAME_EXIST.translation(),
+                    BOI18nEnum.BO_NAME_EXIST,
+                    new String[]{fieldUpdate.getFieldTitle()});
+        }
+        boolean initRequired =false;
+        boolean initReadOnly =false;
+        boolean initHidden = false;
+        boolean initNoNLeaf = false;
+        String boAreaFieldId = fieldUpdate.getBoAreaFieldId();
+        BOAreaFieldVO fieldVO = boAreaFieldDAO.selectFieldById(boAreaFieldId, fieldUpdate.getBoObjectId());
+        //如果是在结构定义里进行的字段修改，只读，非叶子节点是否可选字段，隐藏和必填四个字段的值，是页面选择的值
+
+        if (fieldUpdate.getBoType().equals(BOTypeEnum.OBJECT)) {
+            initRequired = fieldUpdate.getRequired() == null ? false : fieldUpdate.getRequired();
+            initReadOnly = fieldUpdate.getReadOnly() == null ? false : fieldUpdate.getReadOnly();
+            initHidden =   fieldUpdate.getHidden() == null ? false : fieldUpdate.getHidden();
+            initNoNLeaf = fieldUpdate.getNonleaf() == null ? false : fieldUpdate.getNonleaf();
+        }
+        //如果是在类型定义或者格式设计器里修改字段，只读，隐藏，非叶子节点是否可选字段和必填四个字段的值，保持跟以前的一致
+        else{
+            initRequired =fieldVO.getRequired();
+            initReadOnly = fieldVO.getReadOnly();
+            initHidden = fieldVO.getHidden();
+            if (fieldVO.getInherit()) {
+                initNoNLeaf = fieldVO.getNonleaf();
+            } else {
+                initNoNLeaf = fieldUpdate.getNonleaf();
+            }
+        }
+
+
+        fieldVO.setFieldTitle(fieldUpdate.getFieldTitle());
+        fieldVO.setTips(fieldUpdate.getTips());
+        fieldVO.setDescription(fieldUpdate.getDescription());
+        fieldVO.setNonleaf(initNoNLeaf);
+        fieldVO.setUnique(fieldUpdate.getUnique());
+        Optional<SysColumnDO> column = iTableService.getColumnById(fieldVO.getColumnId());
+        Map<String, Object> extendParam = null;
+        boUtilService.saveCurrentLangugeService(fieldVO.getTipsLanguageKey(), fieldUpdate.getTips(), fieldUpdate.getTipsMap());
+        //如果不是业务对象类型的，则要修改字段表内容
+        if (BOTypeEnum.OBJECT.equals(fieldVO.getBoType())) {
+            boUtilService.saveCurrentLangugeService(fieldVO.getBoAreaFieldId(), fieldUpdate.getFieldTitle(), fieldUpdate.getFieldTitleMap());
+
+            //修改描述
+            column = iTableService.getColumnById(fieldVO.getColumnId());
+            Assert.notNull(column, "字段不存在");
+            SysColumnDO sysCol = null;
+            if (column.isPresent()) {
+                sysCol = column.get();
+                int count = boUtilService.querySysTableOtherAccountByField("T_SYS_COLUMN", "COLUMN_NAME",
+                        fieldVO.getFieldTitle(), "COLUMN_ID", sysCol.getColumnId(),
+                        sysCol.getTableId());
+                if (count > 0) {
+                    throw new BORuntimeException(BOI18nEnum.BO_NAME_EXIST.translation(),
+                            BOI18nEnum.BO_NAME_EXIST,
+                            new String[]{fieldVO.getFieldTitle()});
+                }
+                sysCol.setDataSourceId(fieldVO.getDataSourceId());
+                sysCol.setDescription(fieldVO.getDescription());
+                sysCol.setColumnName(fieldVO.getFieldTitle());
+                iTableService.updateSysColumnInfo(sysCol);
+            }
+
+            fieldVO.setUpdateDate(LocalDateTime.now());
+            //T_BO_AREA_FIELD表的只读，隐藏和必填三个字段的值，必须为false
+            fieldVO.setHidden(false);
+            fieldVO.setRequired(false);
+            fieldVO.setReadOnly(false);
+            boAreaFieldDAO.updateByPrimaryKey(fieldVO);
+            //将数据写入到T_BO_AREA_FIELD表后，隐藏和必填三个字段的值，就要变换为以前的模样
+            fieldVO.setHidden(initHidden);
+            fieldVO.setRequired(initRequired);
+            fieldVO.setReadOnly(initReadOnly);
+            if (BOTypeEnum.OBJECT_TYPE.equals(fieldVO.getBoType())) {
+//                extendParam = new HashMap<>();
+//                extendParam.put("boTypeDefineId", fieldVO.getBoObjectId());
+//                extendParam.put("boType", BOTypeEnum.OBJECT_TYPE);
+                extendParam = BOAreaFieldDataEvent.makeExtendParamsForBoType(fieldVO.getBoObjectId());
+            }
+        }
+        //修改关系表
+        if (StringUtils.isNotBlank(fieldVO.getBoTypeAreaFieldId())) {
+            boUtilService.saveCurrentLangugeService(fieldVO.getBoTypeAreaFieldId(), fieldUpdate.getFieldTitle(), fieldUpdate.getFieldTitleMap());
+
+            BOTypeAreaFieldDO typeField = new BOTypeAreaFieldDO();
+            BeanUtils.copyProperties(fieldVO, typeField);
+            typeField.setUpdateDate(LocalDateTime.now());
+
+            if (null != fieldUpdate.getDataType()) {
+                //如果字段类型是自增编号
+                if (fieldVO.getDataType().equals(BOColumnDataTypeEnum.INCREASE_NUM)) {
+                    // 如果字段为自增编号类型时，numRule需要经过规则处理再存入数据库中
+                    if (null != fieldUpdate.getExtendInfo()) {
+                        IncreaseNumConfigVO increaseNumConfigVO = getNewExtendInfo(fieldUpdate.getExtendInfo(), fieldVO.getBoObjectId());
+                        typeField.setExtendInfo(JsonUtils.toJSON(increaseNumConfigVO));
+                    }
+
+                }
+            }
+
+            boTypeAreaFieldDAO.updateByPrimaryKey(typeField);
+            //业务对象类型修改non_leaf属性时更新T_BO_AREA_FIELD表
+            boAreaFieldDAO.updateByPrimaryKey(fieldVO);
+            RulePointInfoDO rulePointInfoDO = new RulePointInfoDO();
+            rulePointInfoDO.setGroupType(RulePointGroupTypeEnum.BUSINESS_OBJECT_ATTRIBUTE);
+            rulePointInfoDO.setGraphPointInfoId(fieldVO.getBoTypeAreaFieldId());
+            if (column.isPresent()) {
+                rulePointInfoDO.setPointKey(column.get().getColumnCode());
+            }
+
+            rulePointInfoDO.setPointName(fieldUpdate.getFieldTitle());
+            graphModelService.updatePointInfo(rulePointInfoDO);
+        }
+
+        // 如果是人员字段，需要更新数据权限表T_BO_AUTH_FIELD
+        if(fieldUpdate.getDataType() == BOColumnDataTypeEnum.PERSON){
+            //首先查询该字段在T_BO_AUTH_FIELD表是否存在
+            BOAuthFieldDO boAuthFieldDO=boAuthFieldDao.selectByBoAreaFieldId(fieldUpdate.getBoAreaFieldId());
+            //如果不存在，就调用插入的方法
+            if(null==boAuthFieldDO){
+                String boDefineId=getBoDefineId(fieldUpdate.getBoObjectId());
+                insertBoAuthField(fieldUpdate,boDefineId);
+            }
+            else{
+                //如果存在，就调用修改的方法
+                updateBOAuthFieldById(fieldUpdate);
+            }
+            // 回显人员权限
+            fieldVO.setBoAuth(fieldUpdate.getBoAuth());
+        }
+
+        if (fieldVO.getFieldTitleMap() == null || fieldVO.getFieldTitleMap().isEmpty()) {
+            //filedTitleMap必须有值，否则在格式设计器中编辑字段后拖入报错
+            fieldVO.setFieldTitleMap(fieldUpdate.getFieldTitleMap());
+        }
+        //发布事件
+        ApplicationContextAwareUtils.publishEvent(new BOAreaFieldDataEvent(fieldVO, OperateTypeEnum.UPDATE, extendParam));
+        //页面上显示
+        fieldVO.setExtendInfo(fieldUpdate.getExtendInfo());
+        fieldVO.setTipsMap(fieldUpdate.getTipsMap());
+        return fieldVO;
+    }
+
+    /**
+     * 更新数据权限表
+     * @param fieldUpdate
+     */
+    private void updateBOAuthFieldById(BOAreaFieldVO fieldUpdate) {
+        BOAuthFieldDO boAuth = fieldUpdate.getBoAuth();
+        if(boAuth == null){
+            boAuth = new BOAuthFieldDO();
+        }
+        boAuth.setUpdateLogin(CurrentUserUtils.getCurrentLoginName());
+        boAuth.setUpdateBy(CurrentUserUtils.getCurrentLoginName());
+        boAuth.setUpdateDate(new Timestamp(System.currentTimeMillis()));
+        boAuth.setBoAreaFieldId(fieldUpdate.getBoAreaFieldId());
+        boAuthFieldDao.updateByBoAreaFieldId(boAuth);
+    }
+
+    /**
+     * 根据boObjectId得到BoDefineId
+     * @param boObjectId
+     * @return
+     */
+    private String getBoDefineId(String boObjectId){
+        String resultId=null;
+        if(StringUtils.isNotBlank(boObjectId)){
+            BODefineDO boDefineDO=boDefineDAO.selectByPrimaryKey(boObjectId);
+            if(null==boDefineDO){
+                BOTypeDefineDO boTypeDefineDO= boTypeDefineDAO.selectByPrimaryKey(boObjectId);
+                if(null!=boTypeDefineDO){
+                    resultId=boTypeDefineDO.getBoDefineId();
+                }
+            }
+            else{
+                resultId=boObjectId;
+            }
+        }
+        return resultId;
+    }
+
+    @Override
+    public void updateEnableByTypeAreaFieldId(String boTypeAreaFieldId, Boolean enable) {
+        // 禁用字段先查询是否被自定义模板关联了
+        BOTypeAreaFieldDO boTypeAreaFieldDO = boTypeAreaFieldDAO.selectByPrimaryKey(boTypeAreaFieldId);
+        if (!enable) {
+            boTypeDefineService.checkBoTypeRelationField(boTypeAreaFieldId,BOI18nEnum.FIELD_REFERENCE_NOT_DISABLED,boTypeAreaFieldDO.getBoObjectId(),true);
+        }
+        boTypeAreaFieldDAO.updateEnableByTypeAreaFieldId(boTypeAreaFieldId, LocalDateTime.now(), enable);
+        // 发布事件，重新计算模板
+        BOAreaFieldVO boAreaFieldVO = new BOAreaFieldVO();
+        switch (boTypeAreaFieldDO.getBoType()) {
+            case OBJECT:
+                boAreaFieldVO.setBizField(true);
+                boAreaFieldVO.setBoObjectId(boTypeAreaFieldDO.getBoObjectId());
+                ApplicationContextAwareUtils.publishEvent(new BOAreaFieldDataEvent(boAreaFieldVO, OperateTypeEnum.UPDATE, null));
+                break;
+            case OBJECT_TYPE:
+//                Map<Object, Object> param = new HashMap<>();
+//                param.put("boTypeDefineId", boTypeAreaFieldDO.getBoObjectId());
+//                param.put("boType", BOTypeEnum.OBJECT_TYPE);
+                Map<String, Object> param = BOAreaFieldDataEvent.makeExtendParamsForBoType(boTypeAreaFieldDO.getBoObjectId());
+                boAreaFieldVO.setBizField(true);
+                ApplicationContextAwareUtils.publishEvent(new BOAreaFieldDataEvent(boAreaFieldVO, OperateTypeEnum.UPDATE, param));
+                break;
+            default:
+                throw new BORuntimeException(BOI18nEnum.BO_FIELD_UNKNOWN);
+        }
+    }
+
+    @Override
+    public void moveTypeAreaFieldId(String boTypeAreaFieldId,
+                                    String aimBOTypeAreaFieldId) {
+
+        BOTypeAreaFieldDO boTypeAreaField = boTypeAreaFieldDAO.selectByPrimaryKey(boTypeAreaFieldId);
+        BOTypeAreaFieldDO aimBOTypeAreaField = boTypeAreaFieldDAO.selectByPrimaryKey(aimBOTypeAreaFieldId);
+
+        Integer temp = boTypeAreaField.getPosition();
+        boTypeAreaField.setPosition(aimBOTypeAreaField.getPosition());
+        aimBOTypeAreaField.setPosition(temp);
+
+        boTypeAreaFieldDAO.updateByPrimaryKey(boTypeAreaField);
+        boTypeAreaFieldDAO.updateByPrimaryKey(aimBOTypeAreaField);
+    }
+
+    @Override
+    @Transactional
+    public void deleteByFieldId(String boAreaFieldId, String boObjectId) {
+        deleteByFieldId(boAreaFieldId, boObjectId, null);
+    }
+
+    @Override
+    @Transactional
+    public void deleteByFieldId(String boAreaFieldId, String boObjectId, Map<?, ?> extendParams) {
+        //判断该字段是否被格式设计所引用
+        List<BOTypeAreaFieldDO>  boTypeAreaFieldDOList=boTypeAreaFieldDAO.selectByAreaFieldId(boAreaFieldId);
+        if (CollectionUtils.isNotEmpty(boTypeAreaFieldDOList)) {
+            for(BOTypeAreaFieldDO boTypeAreaFieldDO:boTypeAreaFieldDOList){
+                boTypeDefineService.checkBoTypeRelationField(boTypeAreaFieldDO.getBoTypeAreaFieldId(),BOI18nEnum.FIELD_REFERENCE_BY_DESIGNER_NOT_DELETE,null,false);
+            }
+        }
+        //FIXME 判断该字段是否已经填写数据
+        
+
+        BOAreaFieldVO fieldVO = boAreaFieldDAO.selectFieldById(boAreaFieldId, boObjectId);
+        if (fieldVO == null) {
+            throw new BORuntimeException(BOI18nEnum.BO_FIELD_NOT_FOUND);
+        }
+        if (Boolean.TRUE.equals(fieldVO.getSystem())) {
+            throw new BORuntimeException(BOI18nEnum.SYS_FIELD_NOT_DELETE);
+        }
+
+        //发布事件
+        ApplicationContextAwareUtils.publishEvent(new BOAreaFieldDataEvent(fieldVO, OperateTypeEnum.DELETE, extendParams));
+
+        //删除当前字段
+        boAreaFieldDAO.deleteByPrimaryKey(boAreaFieldId);
+
+        // 获取所有的类型中的引用，用来删除规则图谱
+        List<BOTypeAreaFieldDO> boTypeAreaFieldDOS = boTypeAreaFieldDAO.selectByAreaFieldId(boAreaFieldId);
+        List<String> boTypeAreaFieldIds = boTypeAreaFieldDOS.stream().map(BOTypeAreaFieldDO::getBoTypeAreaFieldId).collect(Collectors.toList());
+
+        //删除所有对象类型中的引用
+        boTypeAreaFieldDAO.deleteByFieldId(boAreaFieldId);
+
+        //删除规则图谱
+        graphModelService.deletePointInfoListAndRelation(RulePointGroupTypeEnum.BILL_ATTRIBUTE, boTypeAreaFieldIds);
+
+        //删除I18N数据
+        boTypeAreaFieldIds.add(boAreaFieldId);
+        i18nDynamicService.deleteByDataIds(boTypeAreaFieldIds);
+
+        //待从物理表删除的字段
+        List<String> dropColumnCodes = new ArrayList<String>(Arrays.asList(fieldVO.getColumnName()));
+
+        logFileService.info(MessageFormat.format("待删除的字段：{0}，字段类型：{1}", JSON.toJSONString(dropColumnCodes), fieldVO.getDataType().getTitle()));
+
+        //删除附属字段
+        List<DependentColumnAndField> dependentFields = null;
+        if (fieldVO.getDataType() == BOColumnDataTypeEnum.MONEY) {
+            dependentFields = BODependentFieldUtils.getDependentColumnsForMoney(fieldVO, false);
+        } else if (fieldVO.getDataType() == BOColumnDataTypeEnum.RELATION_BO) {
+            dependentFields = BODependentFieldUtils.getDependentColumnsForRelationBO(fieldVO);
+        }
+        if (dependentFields != null) {
+            for (DependentColumnAndField dependentColumnAndField : dependentFields) {
+                ColumnInfoVO depenentCol = dependentColumnAndField.getDependentColumn();
+                SysColumnDO columnDo = sysColumnDAO.getColumnByTableIdAndColumnCode(fieldVO.getTableId(), depenentCol.getColumnCode());
+                if (columnDo != null) {
+                    String columnId = columnDo.getColumnId();
+                    //从T_BO_TYPE_AREA_FIELD表中删除
+                    boTypeAreaFieldDAO.deleteBiZFromTypeArea(columnId);
+                    //T_BO_AREA_FIELD表中删除
+                    boAreaFieldDAO.deleteBiZFromArea(columnId);
+                    //放入待删除列中，最后一起drop
+                    dropColumnCodes.add(columnDo.getColumnCode());
+                }
+            }
+        }
+        //~ 删除附属字段
+
+        logFileService.info(MessageFormat.format("待删除的字段及其附属字段：{0}", JSON.toJSONString(dropColumnCodes)));
+
+        // 如果是人员字段、删除权限配置
+        if(fieldVO.getDataType() == BOColumnDataTypeEnum.PERSON){
+            boAuthFieldDao.deleteByBoAreaFieldId(fieldVO.getBoAreaFieldId());
+        }
+
+        //物理表字段删除。物理表操作放在事务的最后
+        Optional<TableInfoVO> table = iTableService.getTableInfoByTableId(fieldVO.getTableId());
+        if (table.isPresent()) {
+            TableInfoVO tableInfoVO = table.get();
+            logFileService.info(MessageFormat.format("准备删除表：{0} 中字段" , tableInfoVO.getTableName()));
+            logFileService.info("批量字段:" + dropColumnCodes);
+            
+            for (String dropColumnCode : dropColumnCodes) {
+                ResultValue<SysColumnDO> resultValue = iTableService.dropColumn(tableInfoVO.getTableName(), dropColumnCode);
+                if(resultValue.isSuccess()) {
+                    logFileService.info(MessageFormat.format("成功删除表：{0} 中字段：{1}" , tableInfoVO.getTableName() , dropColumnCode));
+                } else{
+                    logFileService.info(MessageFormat.format("删除表：{0} 中字段：{1} 异常，原因：{2}", tableInfoVO.getTableName(), dropColumnCode, resultValue.getMessage()));
+                    throw new BORuntimeException(resultValue.getMessage());
+                }
+            }
+        }
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectMainFieldByBoDefineId(String boDefineId) {
+        List<BOAreaVO> areaList = boAreaService.selectAreaByBODefineId(boDefineId);
+        String mainAreaId = "";
+
+        if (areaList != null) {
+            for (int i = 0; i < areaList.size(); i++) {
+                if (areaList.get(i).getMain()) {
+                    mainAreaId = areaList.get(i).getBoAreaId();
+                }
+            }
+        } else {
+            return null;
+        }
+        List<BOAreaFieldVO> fieldList = this.selectFieldByAreaId(boDefineId, mainAreaId);
+        return fieldList;
+    }
+
+    @Override
+    public List<BOAreaVO> selectAreaAndFieldByBoDefineId(String boDefineId) {
+        //基类（或类型）引用的区域列表
+        List<BOAreaVO> areaList = boAreaService.selectAreaByBODefineId(boDefineId);
+        if (areaList != null) {
+            for (BOAreaVO areaVO : areaList) {
+                //查询区域中被对象基类（或类型）引用的字段
+                List<BOAreaFieldVO> fieldList = this.selectFieldByAreaId(boDefineId, areaVO.getBoAreaId());
+                areaVO.setbOAreaFieldVOList(fieldList);
+            }
+        } else {
+            return null;
+        }
+        return areaList;
+    }
+
+    @Override
+    public List<BOAreaVO> selectAreaFieldByBoDefineId(String boDefineId) {
+        //List<BOAreaVO> areaList = boAreaService.selectAreaByBODefineId(boDefineId);
+        //查询所有区域
+        List<BOAreaVO> areaList = boAreaService.selectAreaByBODefineId4AllAreas(boDefineId);
+        if (areaList != null) {
+            for (BOAreaVO areaVO : areaList) {
+                //查询所有业务字段
+                List<BOAreaFieldVO> fieldList = this.selectAllFieldByAreaId(areaVO.getBoAreaId(), boDefineId,areaVO.getParentAreaId());
+                areaVO.setbOAreaFieldVOList(fieldList);
+            }
+        } else {
+            return null;
+        }
+        return areaList;
+    }
+
+    @Override
+    public BOAreaFieldDO selectByPrimaryKey(String boAreaFieldId) {
+        return boAreaFieldDAO.selectByPrimaryKey(boAreaFieldId);
+    }
+
+    @Override
+    @ThreadLocalCache
+    public BOAreaFieldVO getBoTypeAreaFieldById(String boTypeAreaFieldId) {
+        return boAreaFieldDAO.selectFieldByTypeAreaFieldId(boTypeAreaFieldId);
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectAllFieldByBoDefineId(String boDefineId) {
+        //基类引用的区域列表
+        List<BOAreaVO> areaList = boAreaService.selectAreaByBODefineId(boDefineId);
+        List<BOAreaFieldVO> fieldList = new ArrayList<>();
+        if (areaList != null) {
+            for (int i = 0; i < areaList.size(); i++) {
+                //查询每个区域的所有业务字段
+                List<BOAreaFieldVO> temp = boAreaFieldDAO.selectAllTypeFieldByAreaId(areaList.get(i).getBoAreaId());
+                if(CollectionUtils.isEmpty(temp)){
+                    continue;
+                }
+                List<BOAreaFieldVO> boAreaFieldVOS = filterFiledByBoId(temp, boDefineId,areaList.get(i).getParentAreaId());
+                fieldList.addAll(boAreaFieldVOS);
+            }
+            //根据boTypeAreaFieldId获取国际化标题等
+            translateFieldTitle(fieldList);
+        } else {
+            return null;
+        }
+        return fieldList;
+    }
+
+
+    /**
+     * 补充字段的国际化数据 fieldTitle, fieldTitleMap等
+     *
+     * @param fields
+     * @param funcDataId 指定根据哪一个属性值查询I18N表。
+     */
+    private void getI18nforFields(List<BOAreaFieldVO> fields, Function<BOAreaFieldVO, String> funcDataId) {
+        if (fields == null) {
+            return;
+        }
+//    	//获取字段id集合，便于批量查询多语言数据
+//    	Set<String> fieldIdSet = fields
+//    			.stream()
+////    			.map( (fieldVO) -> fieldVO.getBoAreaFieldId() )
+//    			.map( funcDataId )
+//    			.filter( s -> StringUtils.isNotBlank(s))
+//    			.collect(Collectors.toSet());
+//    	//查询各字段的多语言数据。 key-dataId, value-当前语言的title
+//    	Map<String, String> titleMap = i18nDynamicService.getTextByKeys(fieldIdSet);
+
+        String langCode = CurrentUserUtils.getCurrentLanguageCode();
+
+        fields.forEach(fieldVO -> {
+            String dataId = funcDataId.apply(fieldVO);
+            Map<String, String> titleMap = i18nDynamicService.getMultiDynamicByDataId(dataId);
+
+            if (titleMap.containsKey(langCode)) {
+                fieldVO.setFieldTitle(titleMap.get(langCode));
+            }
+            fieldVO.setFieldTitleMap(titleMap);
+        });
+    }
+
+    //根据boTypeAreaFieldId获取国际化标题等
+    private void translateFieldTitle(List<BOAreaFieldVO> fields) {
+        //第一次循环把boTypeAreaFieldId放入set集合
+        Set<String> idSet = new HashSet<>();
+        for (BOAreaFieldVO boAreaFieldVO : fields) {
+            String boTypeAreaFieldId = boAreaFieldVO.getBoTypeAreaFieldId();
+            //如果boTypeAreaFieldId是空，则说明字段不在T_BO_TYPE_AREA_FIELD表中存在，此时说明该字段在所有类型中被移除，只能使用boAreaFieldId去查多语言
+            if (StringUtils.isBlank(boTypeAreaFieldId)) {
+                //将oAreaFieldId下对应的第一个boTypeAreaFieldId放入idSet
+                idSet.add(boAreaFieldVO.getBoAreaFieldId());
+                boAreaFieldVO.setBoTypeAreaFieldId(boAreaFieldVO.getBoAreaFieldId());
+            } else {
+                idSet.add(boTypeAreaFieldId);
+            }
+        }
+        //得到boTypeAreaFieldId为key，对应text为value的map集合
+        Map<String, String> textMap = i18nDynamicService.getTextByKeys(idSet);
+
+        //第二次循环把FiledTitle转化为对应语言的text
+        for (BOAreaFieldVO boAreaFieldVO : fields) {
+            String fieldTitle = boAreaFieldVO.getFieldTitle();
+            if (null != textMap.get(boAreaFieldVO.getBoTypeAreaFieldId())) {
+                fieldTitle = textMap.get(boAreaFieldVO.getBoTypeAreaFieldId());
+            }
+            boAreaFieldVO.setFieldTitle(fieldTitle);
+            //将多语言信息放入到FieldTitleMap
+            Map<String,String> fieldTitleMap=new HashMap<>();
+            fieldTitleMap.put(CurrentUserUtils.getCurrentLanguageCode(),fieldTitle);
+            boAreaFieldVO.setFieldTitleMap(fieldTitleMap);
+        }
+
+    }
+
+    @Override
+    public List<TreeNodeVO<BOAreaFieldDO>> selectDropdownFieldsInMainArea(String boDefineId) {
+        List<TreeNodeVO<BOAreaFieldDO>> treeNodeVOS = new ArrayList<>();
+        BOAreaDO boAreaDO = boAreaDao.selectMainAreaByBODefineId(boDefineId);
+        if (boAreaDO == null){
+            return treeNodeVOS;
+        }
+        List<BOColumnDataTypeEnum> dataTypes = Arrays.asList(BOColumnDataTypeEnum.DROPDOWN, BOColumnDataTypeEnum.MULTI_DROPDOWN);
+        List<BOAreaFieldDO> boAreaFieldDOS = boAreaFieldDAO.selectFieldsByAreaIdAndDataType(boAreaDO.getBoAreaId(), dataTypes);
+        TreeNodeVO treeNodeVO = new TreeNodeVO();
+        List<TreeNodeVO<BOAreaFieldDO>> fieldTreeList = new ArrayList<>();
+        for (BOAreaFieldDO boAreaFieldDO : boAreaFieldDOS) {
+            TreeNodeVO<BOAreaFieldDO> fieldDOTreeNodeVO = new TreeNodeVO<>();
+            fieldDOTreeNodeVO.setTitle(boAreaFieldDO.getFieldTitle());
+            fieldDOTreeNodeVO.setKey(boAreaFieldDO.getBoAreaFieldId());
+            fieldDOTreeNodeVO.setLeaf(true);
+            fieldDOTreeNodeVO.setData(boAreaFieldDO);
+            fieldTreeList.add(fieldDOTreeNodeVO);
+        }
+        if(CollectionUtils.isNotEmpty(fieldTreeList)){
+            treeNodeVO.setChildren(fieldTreeList);
+            treeNodeVO.setChildCount(fieldTreeList.size());
+        }
+        treeNodeVO.setDisabled(false);
+        treeNodeVO.setLeaf(false);
+        treeNodeVO.setKey("FILTER");
+        treeNodeVO.setSelectable(true);
+        treeNodeVO.setTitle("数据过滤");
+        treeNodeVOS.add(treeNodeVO);
+        return treeNodeVOS;
+    }
+
+    @Override
+    public List<BOAreaVO> selectAreaFieldByViewAuth(String boDefineId) {
+        List<BOAreaVO> areaVOList=selectAreaFieldByBoDefineId(boDefineId);
+        List<BOAreaVO> list=new ArrayList<>();
+        //如果该业务对象有的视图权限赋予给了角色
+        if(CollectionUtils.isNotEmpty(boViewAuthService.getBOViewAuthConfigVOList(boDefineId,null))){
+            //得到一个业务对象下的某个用户的对应的所有角色的区域、字段等视图权限配置信息
+            List<String> typeList = Arrays.asList(BOConstants.BO_VIEW_AUTH_FIELD);
+            Map<String,BOAuthBaseVO> viewAuthMap=boViewAuthService.filterBOViewAuth(boDefineId,typeList);
+            for(BOAreaVO boAreaVO:areaVOList){
+                //如果设置的查看属性为true
+                if(boViewAuthService.checkIsView(viewAuthMap,boAreaVO.getBoAreaId(),BOConstants.BO_VIEW_AUTH_AREA)){
+                    List<BOAreaFieldVO> fieldVOList=boAreaVO.getbOAreaFieldVOList();
+                    if(CollectionUtils.isNotEmpty(fieldVOList)){
+                        List<BOAreaFieldVO> fieldList=new ArrayList<>();
+                        for(BOAreaFieldVO boAreaFieldVO:fieldVOList){
+                            if(boViewAuthService.checkIsView(viewAuthMap,boAreaFieldVO.getBoAreaFieldId(),BOConstants.BO_VIEW_AUTH_FIELD)){
+                                fieldList.add(boAreaFieldVO);
+                            }
+                        }
+                        boAreaVO.setbOAreaFieldVOList(fieldList);
+                    }
+                    list.add(boAreaVO);
+                }
+            }
+        }
+        else{
+            list.addAll(areaVOList);
+        }
+        return list;
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectAllAreaFieldByBoDefineId(BOTypeEnum boType, String boDefineId) {
+        List<BOAreaVO> areaList;
+        if(BOTypeEnum.OBJECT_TYPE == boType){
+            //类查询型定义区域
+            areaList = boAreaService.selectAreaByBODefineId(boDefineId);
+        } else{
+            //查询所有区域(结构定义和类型定义)
+            areaList = boAreaService.selectAreaByBODefineId4AllAreas(boDefineId);
+        }
+        List<BOAreaFieldVO> fieldList = new ArrayList<>();
+        if (CollectionUtils.isNotEmpty(areaList)) {
+            areaList.forEach(boAreaVO -> {
+                //查询每个区域的所有业务字段
+                List<BOAreaFieldVO> boAreaFieldVOS = selectAllFieldByAreaId(boAreaVO.getBoAreaId(), boDefineId,boAreaVO.getParentAreaId());
+                fieldList.addAll(boAreaFieldVOS);
+            });
+        } else {
+            return null;
+        }
+        return fieldList;
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectUniqueFieldById(String boObjectId) {
+        return boAreaFieldDAO.selectUniqueFieldById(boObjectId);
+    }
+
+    @Override
+    public List<BOAreaFieldVO> selectAllUniqueFieldByDefineId(String boDefineId) {
+        return boAreaFieldDAO.selectAllUniqueFieldByDefineId(boDefineId);
+    }
+
+    @Override
+    public BOAreaFieldDO selectAreaFieldByColumnId(String columnId) {
+        return boAreaFieldDAO.selectAreaFieldByColumnId(columnId);
+    }
+}
